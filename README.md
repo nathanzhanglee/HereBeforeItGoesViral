@@ -2,6 +2,13 @@
 
 Here Before It Goes Viral is an interactive web-based pandemic simulation tool designed to model infection spread in a city. It allows users to visualize the impact of public health measures (such as mask mandates, school closures, and lockdowns) on infection rates, using real-time statistical updates and graphical representations.
 
+## Awards
+- **1st place** in the Simulation Track at HoyaHacks
+- **3rd place overall** at HoyaHacks
+
+## Project Showcase
+For more details, check out our [Devpost project page](https://devpost.com/software/herebeforeitgoesviral-org).
+
 ## Key Features
 - **Real-Time Simulation**: Models the spread of infections in a city environment, tracking susceptible, infected, and recovered populations over time.
 - **Customizable Geographic Bounds**: Users can define city layouts and geographic boundaries for the simulation.
