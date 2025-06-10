@@ -1,0 +1,544 @@
+let map;
+let buildings = {
+    "hospital": [],
+    "restaurant": [],
+    "school": [],
+    "office": [],
+    "store": [],
+    "home": []
+};
+let hospitalMarkers = new Map(); // Store unique hospitals by place_id
+let bounds = null;
+let tickInterval = null;
+
+async function initMap() {
+    const center = { lat: 39.952305, lng: -75.193703 }; // Philadelphia
+
+    map = new google.maps.Map(document.getElementById("map"), {
+        zoom: 15,
+        center: center,
+        mapId: "e442d3b4191ab219",
+        disableDefaultUI: false, // Set to true to remove all controls
+        zoomControl: false,      // Remove zoom buttons (+, -)
+        fullscreenControl: false, // Remove fullscreen button
+        streetViewControl: false, // Remove Pegman (Street View control)
+        mapTypeControl: false,
+    });
+    drawBoundingBox();
+    drawCircles(10, 10, 10, center);
+    initializeSIRGraph();
+    findNearby();
+}
+
+const indexedPlaces = new Set();
+
+function findNearby() {
+    indexedPlaces.clear();
+    const service = new google.maps.places.PlacesService(map);
+    const types = ['hospital', 'restaurant', 'school', 'office', 'store', 'home'];
+    types.forEach(type => {
+        const request = {
+            bounds: bounds,
+            type: type 
+        };
+        if (type === 'home') {
+            request.keyword = 'apartment complex';
+        }
+        getAllPlaces(service, request, type, buildings[type]);
+    });
+    console.log("All buildings:", buildings);
+}
+
+function getAllPlaces(service, request, type, resultsArray = []) {
+    service.nearbySearch(request, (results, status, pagination) => {
+        if (status === google.maps.places.PlacesServiceStatus.OK) {
+            results.forEach(place => {
+                if (!place.types.includes('doctor') && !indexedPlaces.has(place.place_id)) {  // Exclude unwanted types
+                    indexedPlaces.add(place.place_id);
+                    resultsArray.push({
+                        name: place.name,
+                        building_id: place.place_id,
+                    });
+                }
+            });
+            // If there are more pages, fetch the next page recursively
+            if (pagination && pagination.hasNextPage) {
+                setTimeout(() => {
+                    pagination.nextPage();
+                }, 2000);  // Delay to avoid hitting API limits
+            } else {
+                if (type == 'school') {
+                    buildings[type] = buildings[type].slice(0, 10);  // Limit schools to 10
+                }
+                if (type == 'home') {
+                    buildings[type] = buildings[type].slice(0, 10);  // Limit apartments to 10
+                }
+                // console.log(`All ${type}s found within the box:`, resultsArray);
+            }
+        } else {
+            console.error(`Error fetching places for ${type}:`, status);
+        }
+    });
+}
+
+let daysElapsed = 0;
+let dayTimerInterval;
+
+
+function startSimulation() {
+    if (Object.keys(buildings).length === 0) {
+        alert("No building data available!");
+        return;
+    }
+
+    // Get elements
+    const controls = document.getElementById("controls");
+    const chartContainer = document.getElementById("sirGraphContainer");
+    const timerDisplay = document.getElementById("timer");
+    const stopButton = document.getElementById("stopbtn");
+
+    // Collapse controls and show necessary elements
+    if (!controls.classList.contains("collapsed")) {
+        controls.classList.add("collapsed");
+        chartContainer.style.display = "block";  // Show chart when collapsed
+        timerDisplay.style.display = "block";  // Show timer
+        stopButton.style.display = "block";  // Show stop button
+        document.getElementById("toggleControls").textContent = "+";
+    }
+
+    daysElapsed = 0;
+    updateDayTimerDisplay();
+    clearInterval(dayTimerInterval);
+    dayTimerInterval = setInterval(updateDayTimer, 2000);
+
+    fetch('http://[::]:8000/run-simulation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildings)
+    })
+    .then(response => response.json())
+    .then(data => {
+        console.log("Simulation result:", data);
+    })
+    .catch(error => console.error("Error running simulation:", error));
+    
+    tickInterval = setInterval(tick, 100);
+}
+function stopTick() {
+    clearInterval(tickInterval);
+    
+}
+
+function tick() {
+    fetch('http://[::]:8000/tick', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+    })
+    .then(response => response.json())
+    .then(data => {
+        console.log("Simulation result:", data);
+        updateSIRGraph(data);
+    })
+    .catch(error => console.error("Error running simulation:", error));
+}
+
+let simulationPaused = false;
+
+function stopSimulation() {
+    const stopButton = document.getElementById("stopbtn");
+
+    if (!simulationPaused) {
+        // Pause the simulation
+        clearInterval(tickInterval);
+        clearInterval(dayTimerInterval);
+        stopButton.textContent = "Resume Simulation";
+        simulationPaused = true;
+        if (!controls.classList.contains("collapsed")) {
+            controls.classList.add("collapsed");
+            toggleControls.textContent = "+";
+        }
+
+    } else {
+        // Resume the simulation
+        tickInterval = setInterval(tick, 100);
+        dayTimerInterval = setInterval(updateDayTimer, 2000);
+        stopButton.textContent = "Stop Simulation";
+        simulationPaused = false;
+        if (controls.classList.contains("collapsed")) {
+            toggleControls.textContent = "+";
+        }
+    }
+}
+
+
+function initializeSIRGraph() {
+    const ctx = document.getElementById('sirGraph').getContext('2d');
+    window.sirGraph = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [
+                {
+                    label: 'Susceptible',
+                    data: [],
+                    borderColor:'rgb(255, 200, 0)', // Softer yellow
+                    backgroundColor: 'rgb(255, 200,0)',
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    fill: false
+                },
+                {
+                    label: 'Infected',
+                    data: [],
+                    borderColor: 'rgba(220, 6, 6, 0.92)' , // Softer red
+                    backgroundColor:'rgba(220, 6, 6, 0.92)' ,
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    fill: false
+                },
+                {
+                    label: 'Recovered',
+                    data: [],
+                    borderColor: 'rgb(4, 4, 208)', // Softer blue
+                    backgroundColor: 'rgb(4, 4, 208)',
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    fill: false
+                }
+            ]
+        },
+
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: {
+                        boxWidth: 20,
+                        font: {
+                            size: 14,
+                            family: 'Arial',
+                            weight: 'bold'
+                        }
+                    }
+                },
+                tooltip: {
+                    enabled: true,
+                    backgroundColor: 'rgba(0,0,0,0.7)',
+                    titleFont: { size: 14 },
+                    bodyFont: { size: 12 }
+                }
+            },
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Time (hours)',
+                        font: { size: 14, weight: 'bold' }
+                    },
+                    grid: {
+                        display: false // Hide vertical grid lines for a cleaner look
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'People',
+                        font: { size: 14, weight: 'bold' }
+                    },
+                    grid: {
+                        color: 'rgba(200, 200, 200, 0.2)' // Softer grid color
+                    },
+                    ticks: {
+                        stepSize: 500, // Adjust step size for readability
+                        font: { size: 12 }
+                    }
+                }
+            },
+            animation: {
+                duration: 1000, // Smooth animation
+                // easing: 'easeInOutQuad'
+            
+            }
+    }
+});
+}
+
+let time = 0;
+
+function updateSIRGraph(data) {
+    let S = 0, I = 0, R = 0;
+    time++;
+    data.forEach(building => {
+        S += building["S"];
+        I += building["I"];
+        R += building["R"];
+    });
+    console.log("S:", S, "I:", I, "R:", R);
+
+    if (window.sirGraph) {
+        window.sirGraph.data.labels.push(time);
+        window.sirGraph.data.datasets[0].data.push(S);
+        window.sirGraph.data.datasets[1].data.push(I);
+        window.sirGraph.data.datasets[2].data.push(R);
+        window.sirGraph.update();
+    }
+}
+
+
+// Stop timer when needed (e.g., simulation ends)
+function stopTimer() {
+    clearInterval(timerInterval);
+}
+
+function updateDayTimer() {
+    daysElapsed++;
+    updateDayTimerDisplay();
+}
+
+function updateDayTimerDisplay() {
+    document.getElementById("timer").textContent = `Day ${daysElapsed}`;
+}
+
+function stopTimer() {
+    clearInterval(dayTimerInterval);
+}
+
+function findHospitals() {
+    const bounds = map.getBounds();
+    if (!bounds) return;
+    const service = new google.maps.places.PlacesService(map);
+    const request = {
+        bounds: bounds,
+        type: "hospital",
+        keyword: "hospital"
+    };
+
+    service.nearbySearch(request, (results, status) => {
+        if (status === google.maps.places.PlacesServiceStatus.OK) {
+            results.forEach((place) => {
+                if (isValidHospital(place) && !hospitalMarkers.has(place.place_id)) {
+                    hospitalMarkers.set(place.place_id, place.geometry.location);
+                    addHospitalMarker(place.geometry.location, place.name);
+                }
+            });
+        }
+    });
+}
+
+// Function to verify that the result is actually a hospital
+function isValidHospital(place) { 
+    const validTypes = ["hospital", "health"];
+    return place.name.toLowerCase().includes("hospital") && place.types.some(type => validTypes.includes(type));
+}
+
+// // Function to add hospital marker using AdvancedMarkerElement
+// function addHospitalMarker(location, title) {
+//     const parser = new DOMParser();
+//     // A marker with a custom inline SVG.
+//     const pinSvgString =
+//     '<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 56 56" fill="none"><rect width="56" height="56" rx="28" fill="#7837FF"></rect><path d="M46.0675 22.1319L44.0601 22.7843" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M11.9402 33.2201L9.93262 33.8723" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M27.9999 47.0046V44.8933" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M27.9999 9V11.1113" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M39.1583 43.3597L37.9186 41.6532" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M16.8419 12.6442L18.0816 14.3506" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M9.93262 22.1319L11.9402 22.7843" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M46.0676 33.8724L44.0601 33.2201" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M39.1583 12.6442L37.9186 14.3506" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M16.8419 43.3597L18.0816 41.6532" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path><path d="M28 39L26.8725 37.9904C24.9292 36.226 23.325 34.7026 22.06 33.4202C20.795 32.1378 19.7867 30.9918 19.035 29.9823C18.2833 28.9727 17.7562 28.0587 17.4537 27.2401C17.1512 26.4216 17 25.5939 17 24.7572C17 23.1201 17.5546 21.7513 18.6638 20.6508C19.7729 19.5502 21.1433 19 22.775 19C23.82 19 24.7871 19.2456 25.6762 19.7367C26.5654 20.2278 27.34 20.9372 28 21.8649C28.77 20.8827 29.5858 20.1596 30.4475 19.6958C31.3092 19.2319 32.235 19 33.225 19C34.8567 19 36.2271 19.5502 37.3362 20.6508C38.4454 21.7513 39 23.1201 39 24.7572C39 25.5939 38.8488 26.4216 38.5463 27.2401C38.2438 28.0587 37.7167 28.9727 36.965 29.9823C36.2133 30.9918 35.205 32.1378 33.94 33.4202C32.675 34.7026 31.0708 36.226 29.1275 37.9904L28 39Z" fill="#FF7878"></path></svg>';
+//     const pinSvg = parser.parseFromString(
+//     pinSvgString,
+//     "image/svg+xml",
+//     ).documentElement;
+
+//     const advancedMarker = new google.maps.marker.AdvancedMarkerElement({
+//         position: location,
+//         map: map,
+//         title: title,
+//         content: pinSvg,
+//     });
+
+//     hospitalMarkers.set(title, advancedMarker);
+// }
+
+function updateLocation() {
+    const address = document.getElementById("locationInput").value;
+    const geocoder = new google.maps.Geocoder();
+
+    geocoder.geocode({ address: address }, (results, status) => {
+        if (status === "OK") {
+            const location = results[0].geometry.location;
+            map.setCenter(location);
+            map.setZoom(15);
+            searchNearbyPlaces(location);
+        } else {
+            alert("Location not found: " + status);
+        }
+    });
+}
+let currentRectangle = null;
+
+function drawBoundingBox() {
+    const verticalKm = parseFloat(document.getElementById("verticalDistance").value) || 0;
+    const horizontalKm = parseFloat(document.getElementById("horizontalDistance").value) || 0;
+
+    if (verticalKm === 0 || horizontalKm === 0) {
+        alert("Please enter valid distances.");
+        return;
+    }
+
+    // Remove existing rectangle if present
+    if (currentRectangle) {
+        currentRectangle.setMap(null);
+    }
+
+    // Conversion factors: 1 km ≈ 0.009 degrees latitude, 1 km ≈ 0.0113 degrees longitude
+    const kmToLat = 0.009;
+    const kmToLng = 0.0113;
+
+    const currentCenter = map.getCenter();
+    const latCenter = currentCenter.lat();
+    const lngCenter = currentCenter.lng();
+
+    // Calculate the rectangle bounds based on the distances in kilometers
+    const northLat = latCenter + (verticalKm / 2) * kmToLat;
+    const southLat = latCenter - (verticalKm / 2) * kmToLat;
+    const eastLng = lngCenter + (horizontalKm / 2) * kmToLng;
+    const westLng = lngCenter - (horizontalKm / 2) * kmToLng;
+
+    // Define rectangle bounds
+    bounds = {
+        north: northLat,
+        south: southLat,
+        east: eastLng,
+        west: westLng
+    };
+
+    // Draw the rectangle on the map (non-editable and non-draggable)
+    currentRectangle = new google.maps.Rectangle({
+        bounds: bounds,
+        editable: false,  // Prevent dragging/resizing
+        draggable: false, // Prevent movement
+        strokeColor: "#FF0000",
+        strokeOpacity: 0.8,
+        strokeWeight: 2,
+        fillColor: "#FF0000",
+        fillOpacity: 0,
+        map: map
+    });
+    map.fitBounds(bounds);
+}    
+
+
+function drawCircles(infected, susceptible, recovered, location) {
+    // Check if the location is valid
+    if (!location || 
+        (typeof location.lat !== "function" && typeof location.lat !== "number") || 
+        (typeof location.lng !== "function" && typeof location.lng !== "number")) {
+        alert("Please provide a valid location with lat and lng.");
+        return;
+    }
+
+    // Extract latitude and longitude
+    const centerLat = typeof location.lat === "function" ? location.lat() : location.lat;
+    const centerLng = typeof location.lng === "function" ? location.lng() : location.lng;
+
+    // Conversion factor: 1 km ≈ 0.009 degrees latitude, 1 km ≈ 0.0113 degrees longitude
+    const kmToLat = 0.009;
+    const kmToLng = 0.0113;
+
+    // Function to create a circle on the map
+    function createCircle(lat, lng, color) {
+        return new google.maps.Circle({
+            strokeColor: color,
+            strokeOpacity: 0.8,
+            strokeWeight: 2,
+            fillColor: color,
+            fillOpacity: 0.6,
+            map: map,
+            center: { lat: lat, lng: lng },
+            radius: 1 // Radius in meters, adjust as needed
+        });
+    }
+
+    // Add circles for infected (red)
+    for (let i = 0; i < infected; i++) {
+        const latOffset = (Math.random() - 0.5)*0.03 * kmToLat; // Random offset to scatter the circles
+        const lngOffset = (Math.random() - 0.5)*0.03 * kmToLng;
+        createCircle(centerLat + latOffset, centerLng + lngOffset, "#FF0000");
+    }
+
+    // Add circles for susceptible (yellow)
+    for (let i = 0; i < susceptible; i++) {
+        const latOffset = (Math.random() - 0.5)*0.03 * kmToLat;
+        const lngOffset = (Math.random() - 0.5)*0.03 * kmToLng;
+        createCircle(centerLat + latOffset, centerLng + lngOffset, "#FFFF00");
+    }
+
+    // Add circles for recovered (blue)
+    for (let i = 0; i < recovered; i++) {
+        const latOffset = (Math.random() - 0.5)*0.03 * kmToLat;
+        const lngOffset = (Math.random() - 0.5)*0.03 * kmToLng;
+        createCircle(centerLat + latOffset, centerLng + lngOffset, "#0000FF");
+    }
+}
+
+document.getElementById("toggleControls").addEventListener("click", function() {
+    const controls = document.getElementById("controls");
+    const chartContainer = document.getElementById("sirGraphContainer");
+    const timer = document.getElementById("timer");
+   
+    if (controls.classList.contains("collapsed")) {
+        controls.classList.remove("collapsed");
+        chartContainer.style.display = "none";
+        timer.style.display = "none";
+        this.textContent = "−";
+    } else {
+        controls.classList.add("collapsed");
+        chartContainer.style.display = "block";
+        timer.style.display = "block";
+        this.textContent = "+";
+    }
+});
+
+// handler (user-input) functions (empty for now - to add backend updates)
+
+function handleCityPopulation() {
+    const cityPopulation = parseInt(document.getElementById("cityPopulation").value, 10);
+    console.log("City Population:", cityPopulation);
+}
+
+function handleInfectionRate() {
+    const infectionRate = parseFloat(document.getElementById("infectionRate").value);
+    console.log("Infection Rate:", infectionRate);
+}
+
+function handleMaskMandate() {
+    const maskMandate = document.getElementById("maskMandate").checked;
+    console.log("Mask Mandate:", maskMandate);
+}
+
+function handleSchoolsClosed() {
+    const schoolsClosed = document.getElementById("schoolsClosed").checked;
+    console.log("Schools Closed:", schoolsClosed);
+}
+
+function handleWorkFromHome() {
+    const workFromHome = document.getElementById("workFromHome").checked;
+    console.log("Work From Home:", workFromHome);
+}
+
+function handleLockdown() {
+    const lockdown = document.getElementById("lockdown").checked;
+    console.log("Lockdown:", lockdown);
+}
+
+document.getElementById("cityPopulation").addEventListener("input", handleCityPopulation);
+document.getElementById("infectionRate").addEventListener("input", handleInfectionRate);
+document.getElementById("maskMandate").addEventListener("change", handleMaskMandate);
+document.getElementById("schoolsClosed").addEventListener("change", handleSchoolsClosed);
+document.getElementById("workFromHome").addEventListener("change", handleWorkFromHome);
+document.getElementById("lockdown").addEventListener("change", handleLockdown);
+
+
+
+// Load Google Maps API with Places and Geometry libraries
+const script = document.createElement('script');
+script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places,geometry&loading=async&callback=initMap`;
+script.async = true;
+document.head.appendChild(script);
